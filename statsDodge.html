@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Dodgeball Stats - Consola Móvil</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        /* Evita el doble tap zoom molesto en celus al clickear rápido */
+        button { touch-action: manipulation; }
+    </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen font-sans select-none antialiased">
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useMemo, useState, useEffect } = React;
+
+        const METRICAS = ["T", "H", "O", "C", "S"];
+
+        const STORAGE_KEY = 'dodgeball-stats-save';
+        const defaultSetStats = () => ({ jugo: true, T: 0, H: 0, O: "", C: 0, S: false });
+        const buildPlayerStats = (sets) => sets.reduce((acc, set) => ({ ...acc, [set.id]: defaultSetStats() }), {});
+
+        const loadSavedState = () => {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                return raw ? JSON.parse(raw) : null;
+            } catch {
+                return null;
+            }
+        };
+
+        const saveAppState = (state) => {
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+            } catch {
+                // ignore localStorage errors
+            }
+        };
+
+        const ConfigSection = ({
+            partido,
+            onPartidoChange,
+            jugadores,
+            nuevoJugadorNombre,
+            onNuevoJugadorNombreChange,
+            onAddJugador,
+            onEliminarJugador,
+            verConfig,
+            onToggleConfig,
+            onExportJson,
+            onImportJson,
+            onImportClick
+        }) => (
+            <>
+                <div class="flex justify-between items-center bg-gray-900 py-1 px-2 border-b border-gray-800 text-xs">
+                    <span class="text-cyan-400 font-bold">📋 Config. Partido</span>
+                    <button onClick={onToggleConfig} class="text-gray-400 font-bold px-2 py-0.5 bg-gray-800 rounded">
+                        {verConfig ? "🙈 Ocultar" : "🛠️ Mostrar"}
+                    </button>
+                </div>
+
+                {verConfig && (
+                    <header class="bg-gray-900 p-3 rounded-b-xl border-x border-b border-gray-800 mb-2 grid grid-cols-2 gap-2 text-xs">
+                        {[
+                            { label: "RIVAL", key: "rival", placeholder: "MARVIN" },
+                            { label: "FECHA", key: "fecha", placeholder: "2026-03-22" },
+                            { label: "CATEGORÍA", key: "categoria", placeholder: "MASC" },
+                            { label: "PELOTA", key: "pelota", placeholder: "FOAM" }
+                        ].map(field => (
+                            <div key={field.key}>
+                                <label class="block text-gray-500 font-bold mb-0.5">{field.label}</label>
+                                <input
+                                    type="text"
+                                    placeholder={field.placeholder}
+                                    value={partido[field.key]}
+                                    onChange={e => onPartidoChange(field.key, e.target.value)}
+                                    class="w-full bg-gray-800 border border-gray-700 rounded p-1 text-center text-white"
+                                />
+                            </div>
+                        ))}
+
+                        <div class="col-span-2 border-t border-gray-800 pt-2 mt-1">
+                            <form onSubmit={onAddJugador} class="flex gap-1.5">
+                                <input
+                                    type="text"
+                                    placeholder="Añadir jugador..."
+                                    value={nuevoJugadorNombre}
+                                    onChange={e => onNuevoJugadorNombreChange(e.target.value)}
+                                    class="flex-1 bg-gray-800 border border-gray-700 rounded p-1 text-white"
+                                />
+                                <button type="submit" class="bg-cyan-700 px-3 rounded font-bold text-white text-[11px]">＋</button>
+                            </form>
+                            <div class="flex flex-wrap gap-1 mt-1.5 max-h-16 overflow-y-auto">
+                                {jugadores.map(jug => (
+                                    <span key={jug} class="inline-flex items-center gap-1 bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded text-[10px] border border-gray-700">
+                                        {jug}
+                                        <button type="button" onClick={() => onEliminarJugador(jug)} class="text-red-400 font-bold">×</button>
+                                    </span>
+                                ))}
+                            </div>
+
+                            <div class="flex flex-col gap-1 mt-2 text-[10px] text-gray-400">
+                                <span>Guardado automático en el navegador.</span>
+                                <div class="flex gap-1">
+                                    <button type="button" onClick={onExportJson} class="flex-1 bg-slate-800 border border-slate-700 rounded py-1 text-white text-[11px]">Exportar JSON</button>
+                                    <button type="button" onClick={onImportClick} class="flex-1 bg-slate-800 border border-slate-700 rounded py-1 text-white text-[11px]">Importar JSON</button>
+                                </div>
+                                <input id="import-json-input" type="file" accept="application/json" class="hidden" onChange={onImportJson} />
+                            </div>
+                        </div>
+                    </header>
+                )}
+            </>
+        );
+
+        const SetToolbar = ({ sets, setActivo, onSelectSet, onAddSet, onRemoveSet, onResultadoChange }) => (
+            <section class="bg-gray-900 p-2 rounded-xl border border-gray-800 mb-2 shadow-md">
+                <div class="flex items-center justify-between gap-2 mb-2">
+                    <div class="flex gap-1 overflow-x-auto pb-1 max-w-[70%]">
+                        {sets.map(set => (
+                            <button
+                                key={set.id}
+                                onClick={() => onSelectSet(set.id)}
+                                class={`px-2.5 py-1 rounded text-xs font-bold transition-all shrink-0 ${setActivo === set.id ? 'bg-cyan-500 text-gray-950 font-black' : 'bg-gray-800 text-gray-400'}`}>
+                                S{set.id}({set.resultado})
+                            </button>
+                        ))}
+                    </div>
+                    <div class="flex gap-1 shrink-0">
+                        <button onClick={onRemoveSet} class="bg-red-950/60 border border-red-900/60 text-red-400 text-[10px] font-bold px-1.5 py-0.5 rounded">－S</button>
+                        <button onClick={onAddSet} class="bg-emerald-950/60 border border-emerald-900/60 text-emerald-400 text-[10px] font-bold px-1.5 py-0.5 rounded">＋S</button>
+                    </div>
+                </div>
+
+                <div class="flex items-center gap-2 bg-gray-800/40 p-1 rounded border border-gray-800 text-xs w-full justify-between">
+                    <span class="text-gray-400">Resultado Set {setActivo}:</span>
+                    <div class="flex gap-0.5">
+                        {['G', 'E', 'P'].map(resultado => (
+                            <button
+                                key={resultado}
+                                onClick={() => onResultadoChange(setActivo, resultado)}
+                                class={`px-2.5 py-0.5 rounded text-[11px] font-black ${sets.find(s => s.id === setActivo)?.resultado === resultado ? 'bg-cyan-400 text-gray-900' : 'bg-gray-700 text-gray-400'}`}>
+                                {resultado}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            </section>
+        );
+
+        const MetricHeader = () => (
+            <div class="grid grid-cols-12 gap-1 px-2 mb-1 text-[10px] font-bold text-gray-500 tracking-wider text-center">
+                <div class="col-span-3 text-left">JUGADOR</div>
+                <div class="col-span-2">🔥 TIROS</div>
+                <div class="col-span-2 text-green-500">🎯 HITS</div>
+                <div class="col-span-2 text-blue-400">🧤 CATCH</div>
+                <div class="col-span-2 text-red-400">💀 OUT</div>
+                <div class="col-span-1 text-yellow-400">👑 V</div>
+            </div>
+        );
+
+        const PlayerRow = ({ jugador, dataSet, estaJugando, onChangeStat, onToggleJugo }) => (
+            <div class={`grid grid-cols-12 gap-1 items-center p-1.5 rounded-lg border text-xs h-[52px] transition-all ${estaJugando ? 'bg-gray-900 border-gray-800/80 shadow-sm' : 'bg-gray-950 border-gray-900/60 opacity-30'}`}>
+                <div class="col-span-3 flex flex-col justify-center min-w-0 pr-0.5">
+                    <span onClick={onToggleJugo} class={`font-bold truncate cursor-pointer select-none tracking-tight leading-tight ${estaJugando ? 'text-white' : 'text-gray-600 line-through'}`}>
+                        {jugador}
+                    </span>
+                    <span onClick={onToggleJugo} class={`text-[8px] font-black w-fit px-1 rounded-sm mt-0.5 cursor-pointer ${estaJugando ? 'bg-cyan-950 text-cyan-400 border border-cyan-900' : 'bg-gray-900 text-gray-500'}`}>
+                        {estaJugando ? "CANCHA" : "BANCO"}
+                    </span>
+                </div>
+
+                <div class="col-span-2 flex items-center justify-between bg-gray-800/40 border border-gray-800 rounded p-0.5 h-full">
+                    <button disabled={!estaJugando} onClick={() => onChangeStat('T', Math.max(0, dataSet.T - 1))} class="w-4 h-full bg-gray-800 text-gray-400 font-bold rounded-sm text-[11px]">-</button>
+                    <span class="font-bold text-center w-full text-xs">{estaJugando ? dataSet.T : "-"}</span>
+                    <button disabled={!estaJugando} onClick={() => onChangeStat('T', dataSet.T + 1)} class="w-4 h-full bg-gray-700 text-white font-bold rounded-sm text-[11px]">+</button>
+                </div>
+
+                <div class="col-span-2 flex items-center justify-between bg-gray-800/40 border border-gray-800 rounded p-0.5 h-full">
+                    <button disabled={!estaJugando} onClick={() => onChangeStat('H', Math.max(0, dataSet.H - 1))} class="w-4 h-full bg-gray-800 text-gray-400 font-bold rounded-sm text-[11px]">-</button>
+                    <span class="font-bold text-center w-full text-xs text-green-400">{estaJugando ? dataSet.H : "-"}</span>
+                    <button disabled={!estaJugando} onClick={() => onChangeStat('H', dataSet.H + 1)} class="w-4 h-full bg-green-950 border border-green-800/40 text-green-400 font-bold rounded-sm text-[11px]">+</button>
+                </div>
+
+                <div class="col-span-2 flex items-center justify-between bg-gray-800/40 border border-gray-800 rounded p-0.5 h-full">
+                    <button disabled={!estaJugando} onClick={() => onChangeStat('C', Math.max(0, dataSet.C - 1))} class="w-4 h-full bg-gray-800 text-gray-400 font-bold rounded-sm text-[11px]">-</button>
+                    <span class="font-bold text-center w-full text-xs text-blue-400">{estaJugando ? dataSet.C : "-"}</span>
+                    <button disabled={!estaJugando} onClick={() => onChangeStat('C', dataSet.C + 1)} class="w-4 h-full bg-blue-950 border border-blue-800/40 text-blue-400 font-bold rounded-sm text-[11px]">+</button>
+                </div>
+
+                <div class="col-span-2 h-full">
+                    <input
+                        type="text"
+                        disabled={!estaJugando}
+                        placeholder="Causa"
+                        value={dataSet.O}
+                        onChange={e => onChangeStat('O', e.target.value.toUpperCase())}
+                        class="w-full h-full bg-gray-950 border border-gray-800 rounded text-center font-bold text-red-400 p-0.5 text-xs placeholder-gray-800 disabled:opacity-20"
+                    />
+                </div>
+
+                <div class="col-span-1 h-full flex items-center justify-center">
+                    <button
+                        disabled={!estaJugando}
+                        onClick={() => onChangeStat('S', !dataSet.S)}
+                        class={`w-full h-full rounded border transition-all text-[10px] font-black ${dataSet.S && estaJugando ? 'bg-yellow-500/20 border-yellow-600 text-yellow-400' : 'bg-gray-950 border-gray-800 text-gray-700'}`}>
+                        {estaJugando ? (dataSet.S ? '✖' : ' ') : '-'}
+                    </button>
+                </div>
+            </div>
+        );
+
+        function App() {
+            const savedState = loadSavedState();
+
+            const [partido, setPartido] = useState(savedState?.partido ?? {
+                rival: "",
+                fecha: new Date().toLocaleDateString('es-AR'),
+                categoria: "",
+                pelota: ""
+            });
+
+            const [sets, setSets] = useState(savedState?.sets ?? [{ id: 1, resultado: "G" }]);
+            const [setActivo, setSetActivo] = useState(savedState?.setActivo ?? 1);
+            const [jugadores, setJugadores] = useState(savedState?.jugadores ?? []);
+            const [nuevoJugadorNombre, setNuevoJugadorNombre] = useState("");
+            const [verConfig, setVerConfig] = useState(savedState?.verConfig ?? true);
+            const [stats, setStats] = useState(savedState?.stats ?? {});
+
+            useEffect(() => {
+                saveAppState({ partido, sets, setActivo, jugadores, stats, verConfig });
+            }, [partido, sets, setActivo, jugadores, stats, verConfig]);
+
+            const updatePartidoField = (key, value) => {
+                setPartido(prev => ({ ...prev, [key]: key === 'rival' || key === 'categoria' || key === 'pelota' ? value.toUpperCase() : value }));
+            };
+
+            const exportJson = () => {
+                const state = { partido, sets, setActivo, jugadores, stats, verConfig, savedAt: new Date().toISOString() };
+                const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${(partido.rival || 'partido').replace(/\s+/g, '_')}_dodgeball.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+            };
+
+            const handleImportClick = () => {
+                document.getElementById('import-json-input')?.click();
+            };
+
+            const importJson = (event) => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const imported = JSON.parse(e.target.result);
+                        if (!imported || typeof imported !== 'object') throw new Error();
+
+                        setPartido(imported.partido ?? partido);
+                        setSets(Array.isArray(imported.sets) ? imported.sets : sets);
+                        setSetActivo(imported.setActivo ?? setActivo);
+                        setJugadores(Array.isArray(imported.jugadores) ? imported.jugadores : jugadores);
+                        setStats(imported.stats ?? stats);
+                        setVerConfig(imported.verConfig ?? verConfig);
+                    } catch {
+                        alert('JSON inválido. Asegurate de cargar un archivo de partido válido.');
+                    } finally {
+                        event.target.value = '';
+                    }
+                };
+                reader.readAsText(file);
+            };
+
+            const addJugador = (e) => {
+                e.preventDefault();
+                const nombreClean = nuevoJugadorNombre.trim();
+                if (!nombreClean || jugadores.includes(nombreClean)) return;
+
+                setJugadores(prev => [...prev, nombreClean]);
+                setStats(prev => ({ ...prev, [nombreClean]: buildPlayerStats(sets) }));
+                setNuevoJugadorNombre("");
+            };
+
+            const removeJugador = (nombre) => {
+                if (!confirm(`¿Eliminar a ${nombre}?`)) return;
+                setJugadores(prev => prev.filter(j => j !== nombre));
+                setStats(prev => {
+                    const copia = { ...prev };
+                    delete copia[nombre];
+                    return copia;
+                });
+            };
+
+            const addSet = () => {
+                const nuevoId = sets.length ? sets[sets.length - 1].id + 1 : 1;
+                setSets(prev => [...prev, { id: nuevoId, resultado: "G" }]);
+                setStats(prev => {
+                    const copia = { ...prev };
+                    jugadores.forEach(jug => {
+                        copia[jug] = { ...copia[jug], [nuevoId]: defaultSetStats() };
+                    });
+                    return copia;
+                });
+                setSetActivo(nuevoId);
+            };
+
+            const removeLastSet = () => {
+                if (sets.length <= 1) return;
+                const ultimoSetId = sets[sets.length - 1].id;
+                if (!confirm(`¿Borrar Set ${ultimoSetId}?`)) return;
+
+                const nextSets = sets.slice(0, -1);
+                setSets(nextSets);
+                setSetActivo(prev => (prev === ultimoSetId ? nextSets[nextSets.length - 1].id : prev));
+                setStats(prev => {
+                    const copia = { ...prev };
+                    jugadores.forEach(jug => {
+                        const playerStats = { ...copia[jug] };
+                        delete playerStats[ultimoSetId];
+                        copia[jug] = playerStats;
+                    });
+                    return copia;
+                });
+            };
+
+            const updatePlayerStat = (jugador, metrica, valor) => {
+                setStats(prev => {
+                    const playerStats = prev[jugador] || {};
+                    const setStats = playerStats[setActivo] || defaultSetStats();
+                    return {
+                        ...prev,
+                        [jugador]: {
+                            ...playerStats,
+                            [setActivo]: {
+                                ...setStats,
+                                [metrica]: valor
+                            }
+                        }
+                    };
+                });
+            };
+
+            const toggleJugo = (jugador) => {
+                const estadoActual = stats[jugador]?.[setActivo]?.jugo ?? true;
+                updatePlayerStat(jugador, 'jugo', !estadoActual);
+            };
+
+            const handleResultadoChange = (setId, resultado) => {
+                setSets(prev => prev.map(s => s.id === setId ? { ...s, resultado } : s));
+            };
+
+            const calcularTotalJugador = (jugador, metrica) => {
+                const playerStats = stats[jugador];
+                if (!playerStats) return 0;
+                return sets.reduce((acc, set) => {
+                    const data = playerStats[set.id];
+                    if (!data || !data.jugo) return acc;
+                    if (metrica === 'S') return acc + (data.S ? 1 : 0);
+                    if (metrica === 'O') return acc + (data.O ? 1 : 0);
+                    return acc + (parseInt(data[metrica], 10) || 0);
+                }, 0);
+            };
+
+            const jugadoresOrdenados = useMemo(() => {
+                return [...jugadores].sort((a, b) => {
+                    const aJuega = stats[a]?.[setActivo]?.jugo ?? true;
+                    const bJuega = stats[b]?.[setActivo]?.jugo ?? true;
+                    return (bJuega === aJuega) ? a.localeCompare(b) : (bJuega ? 1 : -1);
+                });
+            }, [jugadores, stats, setActivo]);
+
+            const exportarExcel = () => {
+                const ganadosMoran = sets.filter(s => s.resultado === "G").length;
+                const ganadosRival = sets.filter(s => s.resultado === "P").length;
+                const totalString = `M ${ganadosMoran}-${ganadosRival} R`;
+
+                // Calculamos cuántas columnas van a ocupar los sets dinámicamente + 2 columnas iniciales (A y B)
+                const totalColumnasEfectivas = 2 + sets.length + 1; // Nombres + Metricas + Cantidad de Sets + Columna Total
+
+                // --- FILA 1: METADATOS COMPACTOS (A1, B1, C1...) ---
+                const fila1 = Array(totalColumnasEfectivas).fill("");
+                fila1[0] = "PARTIDO VS:";
+                fila1[1] = partido.rival || "";
+                fila1[2] = "FECHA:";
+                fila1[3] = partido.fecha || "";
+                fila1[4] = "CATEGORIA:";
+                fila1[5] = partido.categoria || "";
+                fila1[6] = "PELOTA:";
+                fila1[7] = partido.pelota || "";
+
+                // Filas de relleno 2 y 3 vacías para dar espacio
+                const fila2 = Array(totalColumnasEfectivas).fill("");
+                const fila3 = Array(totalColumnasEfectivas).fill("");
+
+                // --- FILA 4: ESTRUCTURA DE SETS SEGUIDOS ---
+                const fila4 = ["SET", ""];
+                sets.forEach(set => {
+                    fila4.push(set.id); // Van de corrido, sin "" intermedios
+                });
+                fila4.push("TOTAL"); // El total va justo en la columna siguiente al último set
+
+                // --- FILA 5: RESULTADOS DE SETS SEGUIDOS ---
+                const fila5 = ["RESULTADO (G/E/P)", ""];
+                sets.forEach(set => {
+                    fila5.push(set.resultado.toLowerCase()); 
+                });
+                fila5.push(totalString); // Score global alineado con TOTAL
+
+                const datos = [fila1, fila2, fila3, fila4, fila5];
+
+                // --- BLOQUE DE JUGADORES (FILA 6 EN ADELANTE) ---
+                jugadores.forEach(jugador => {
+                    METRICAS.forEach((metrica, index) => {
+                        const fila = index === 0 ? [jugador, metrica.toLowerCase()] : ["", metrica.toLowerCase()];
+                        
+                        sets.forEach(set => {
+                            const data = stats[jugador]?.[set.id];
+                            
+                            if (!data || !data.jugo) {
+                                fila.push(""); // Una sola celda vacía por set si es banco
+                                return;
+                            }
+
+                            if (metrica === 'S') {
+                                fila.push(data.S ? "X" : "");
+                            } else if (metrica === 'O') {
+                                fila.push(data.O || "");
+                            } else {
+                                const val = parseInt(data[metrica], 10) || 0;
+                                fila.push(val > 0 ? val : "");
+                            }
+                        });
+
+                        // Agregamos el total al final de la fila de corrido
+                        const total = calcularTotalJugador(jugador, metrica);
+                        if (metrica === 'S' || metrica === 'O') {
+                            fila.push(total > 0 ? total : 0);
+                        } else {
+                            fila.push(total);
+                        }
+
+                        datos.push(fila);
+                    });
+                });
+
+                // Generar Hoja de Cálculo
+                const ws = XLSX.utils.aoa_to_sheet(datos);
+
+                // --- 🎯 ESTILOS DE ALINEACIÓN Y DISEÑO ---
+                const alineacionCentrada = { horizontal: "center", vertical: "center" };
+                
+                const estilosResultado = {
+                    g: { fill: { patternType: "solid", fgColor: { rgb: "FFCCEFD9" } }, font: { color: { rgb: "FF1F4D2E" }, bold: true }, alignment: alineacionCentrada },
+                    p: { fill: { patternType: "solid", fgColor: { rgb: "FFFCE4D6" } }, font: { color: { rgb: "FF6A2E00" }, bold: true }, alignment: alineacionCentrada },
+                    e: { fill: { patternType: "solid", fgColor: { rgb: "FFFFF2CC" } }, font: { color: { rgb: "FF7F6000" }, bold: true }, alignment: alineacionCentrada }
+                };
+
+                // 1. Centrado matemático general (asegurar estructura de celda y tipo cuando haga falta)
+                Object.keys(ws).forEach(celda => {
+                    if (celda[0] === '!') return;
+                    if (!ws[celda].s) ws[celda].s = {};
+                    ws[celda].s.alignment = alineacionCentrada;
+                });
+
+                // 2. Forzar creación y estilos de las celdas de la Fila 5 (Resultados) para compatibilidad con Excel
+                sets.forEach((set, i) => {
+                    const colIndex = 2 + i; // C=2, D=3...
+                    const colRef = XLSX.utils.encode_col(colIndex);
+                    const cellRef = `${colRef}5`;
+
+                    // asegurar que exista la celda y que sea texto
+                    if (!ws[cellRef]) {
+                        ws[cellRef] = { v: (set.resultado || '').toString(), t: 's' };
+                    } else {
+                        ws[cellRef].v = (ws[cellRef].v || set.resultado || '').toString();
+                        ws[cellRef].t = 's';
+                    }
+
+                    const resChar = (ws[cellRef].v || '').toString().toLowerCase();
+                    if (estilosResultado[resChar]) {
+                        ws[cellRef].s = estilosResultado[resChar];
+                    } else {
+                        // si no coincide, dejar al menos alineación
+                        ws[cellRef].s = ws[cellRef].s || {};
+                        ws[cellRef].s.alignment = alineacionCentrada;
+                    }
+                });
+
+                // 3. Estilos de las cabeceras fijas de control
+                const estiloCabeceraFija = { font: { bold: true, color: { rgb: "FF404040" } }, alignment: alineacionCentrada };
+                const columnaTotalRef = XLSX.utils.encode_col(2 + sets.length);
+                ["A1", "C1", "E1", "G1", "A4", "A5", `${columnaTotalRef}4`].forEach(ref => {
+                    if (ws[ref]) ws[ref].s = { ...(ws[ref].s || {}), ...estiloCabeceraFija };
+                });
+
+                // --- 📐 DIMENSIONES DINÁMICAS DE COLUMNAS ---
+                const anchos = [];
+                anchos[0] = { wch: 18 };
+                anchos[1] = { wch: 5 };
+                for (let i = 2; i < 2 + sets.length; i++) anchos[i] = { wch: 5 };
+                anchos[2 + sets.length] = { wch: 12 };
+                ws['!cols'] = anchos;
+
+                // --- 📐 DIMENSIONES DE FILAS ---
+                const altos = [];
+                altos[0] = { hpt: 22 };
+                altos[1] = { hpt: 15 };
+                altos[2] = { hpt: 15 };
+                altos[3] = { hpt: 18 };
+                altos[4] = { hpt: 22 };
+                for (let i = 5; i < datos.length; i++) altos[i] = { hpt: 16 };
+                ws['!rows'] = altos;
+
+                // --- GENERAR Y DESCARGAR (FORZAR cellStyles) ---
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Estadísticas");
+                XLSX.writeFile(wb, `${(partido.rival || "Partido").replace(/ /g, "_")}_Stats.xlsx`, { bookType: 'xlsx', cellStyles: true });
+            };
+            
+            return (
+                <div class="max-w-md mx-auto p-2 flex flex-col min-h-screen pb-24">
+                    <ConfigSection
+                        partido={partido}
+                        onPartidoChange={updatePartidoField}
+                        jugadores={jugadores}
+                        nuevoJugadorNombre={nuevoJugadorNombre}
+                        onNuevoJugadorNombreChange={setNuevoJugadorNombre}
+                        onAddJugador={addJugador}
+                        onEliminarJugador={removeJugador}
+                        verConfig={verConfig}
+                        onToggleConfig={() => setVerConfig(prev => !prev)}
+                        onExportJson={exportJson}
+                        onImportJson={importJson}
+                        onImportClick={handleImportClick}
+                    />
+
+                    <SetToolbar
+                        sets={sets}
+                        setActivo={setActivo}
+                        onSelectSet={setSetActivo}
+                        onAddSet={addSet}
+                        onRemoveSet={removeLastSet}
+                        onResultadoChange={handleResultadoChange}
+                    />
+
+                    <MetricHeader />
+
+                    <section class="space-y-1.5 flex-1">
+                        {jugadoresOrdenados.length > 0 ? (
+                            jugadoresOrdenados.map(jugador => {
+                                const dataSet = stats[jugador]?.[setActivo] || defaultSetStats();
+                                const estaJugando = dataSet.jugo;
+
+                                return (
+                                    <PlayerRow
+                                        key={jugador}
+                                        jugador={jugador}
+                                        dataSet={dataSet}
+                                        estaJugando={estaJugando}
+                                        onChangeStat={(metrica, valor) => updatePlayerStat(jugador, metrica, valor)}
+                                        onToggleJugo={() => toggleJugo(jugador)}
+                                    />
+                                );
+                            })
+                        ) : (
+                            <div class="text-center p-6 bg-gray-900 rounded-xl border border-dashed border-gray-800 text-gray-500 text-xs">
+                                Desplegá la sección de arriba y añadí el roster.
+                            </div>
+                        )}
+                    </section>
+
+                    <div class="fixed bottom-0 left-0 right-0 bg-gray-950/95 backdrop-blur-md p-2.5 border-t border-gray-900 flex justify-center shadow-2xl z-50">
+                        <button
+                            onClick={exportarExcel}
+                            disabled={jugadores.length === 0}
+                            class={`text-xs font-bold py-3 px-6 rounded-xl transition-all w-full flex items-center justify-center gap-2 tracking-wide ${jugadores.length === 0 ? 'bg-gray-800 text-gray-600 cursor-not-allowed' : 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg active:scale-95'}`}>
+                            <span>📊</span> Exportar a Excel Exacto (.xlsx)
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
